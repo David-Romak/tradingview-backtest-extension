@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "TradingView Backtest Assistant",
+  "version": "1.0.0",
+  "description": "Automates trade management and collects backtesting data from TradingView.",
+  "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": ["https://www.tradingview.com/*"],
+      "js": ["dist/page-bridge.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.tradingview.com/*"],
+      "js": ["dist/content.js"],
+      "run_at": "document_idle",
+      "world": "ISOLATED"
+    }
+  ]
+}
