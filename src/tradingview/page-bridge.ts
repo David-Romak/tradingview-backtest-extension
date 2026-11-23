@@ -21,12 +21,24 @@ if (globalObj.__BACKTEST_ASSISTANT_PAGE_BRIDGE_INITIALIZED__) {
 
 // Start observing chart drawings
 observer.start((positions, totalDrawings) => {
+  let symbol: string | undefined;
+  const chart = adapter.getActiveChart();
+  if (chart) {
+    const chartObj = chart as Record<string, unknown>;
+    if (typeof chartObj.symbol === "function") {
+      try {
+        symbol = String((chartObj.symbol as () => unknown)());
+      } catch {}
+    }
+  }
+
   const message: DrawingsUpdatedMessage = {
     channel: BRIDGE_CHANNEL,
     type: BRIDGE_MESSAGE_TYPES.DRAWINGS_UPDATED,
     payload: {
       totalDrawings,
       positions,
+      symbol,
       timestamp: Date.now(),
     },
   };

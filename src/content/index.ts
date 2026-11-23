@@ -1,5 +1,8 @@
+import { MetadataStore } from "../metadata/store";
+import type { PositionWithMetadata, TradeMetadata } from "../metadata/types";
 import { BRIDGE_CHANNEL, BRIDGE_MESSAGE_TYPES } from "../shared/constants";
-import type { DrawingsUpdatedMessage } from "../tradingview/types";
+import type { DrawingsUpdatedMessage, PositionDrawing } from "../tradingview/types";
+import { BacktestPanel } from "./panel";
 
 console.log(
   "%c[Backtest Assistant] Content script loaded in ISOLATED world",
@@ -10,34 +13,74 @@ const globalObj = window as unknown as Record<string, unknown>;
 if (!globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__) {
   globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__ = true;
 
-  window.addEventListener("message", (event: MessageEvent) => {
-  if (event.source !== window) return;
-  if (event.origin !== window.location.origin) return;
+  const store = new MetadataStore();
+  let latestPositions: PositionDrawing[] = [];
+  let latestSymbol: string | undefined;
 
-  const message = event.data;
-  if (!message || message.channel !== BRIDGE_CHANNEL) return;
+  const panel = new BacktestPanel({
+    onMetadataChange: async (drawingId: string, update: Partial<TradeMetadata>) => {
+      const pos = latestPositions.find((p) => p.id === drawingId);
+      await store.saveMetadata(drawingId, update, {
+        positionType: pos?.type,
+        prices: pos?.prices,
+        entryTime: pos?.entryTime,
+        symbol: latestSymbol,
+      });
+    },
+    onCleanupOrphans: async () => {
+      const activeIds = latestPositions.map((p) => p.id);
+      const cleaned = await store.cleanupOrphans(activeIds);
+      if (cleaned.length > 0) {
+        const synced = await store.syncWithDrawings(latestPositions, latestSymbol);
+        panel.setPositions(synced, latestSymbol);
+      }
+    },
+  });
 
-  if (message.type === BRIDGE_MESSAGE_TYPES.DRAWINGS_UPDATED) {
-    const update = message as DrawingsUpdatedMessage;
-    const { totalDrawings, positions, timestamp } = update.payload;
+  // Mount panel into the page
+  panel.mount();
 
-    console.log(
-      `[Backtest Assistant] Snapshot received from page bridge [${new Date(timestamp).toLocaleTimeString()}]: ` +
-      `${positions.length} position drawings (total chart drawings: ${totalDrawings})`,
-    );
+  // Listen for drawing snapshots from page bridge
+  window.addEventListener("message", async (event: MessageEvent) => {
+    if (event.source !== window) return;
+    if (event.origin !== window.location.origin) return;
 
-    if (positions.length > 0) {
-      console.table(
-        positions.map((p) => ({
-          id: p.id,
-          type: p.type,
-          entry: p.prices.entry,
-          stopLoss: p.prices.stopLoss,
-          takeProfit: p.prices.takeProfit,
-          entryTime: p.entryTime ? new Date(p.entryTime * 1000).toISOString() : "N/A",
-        })),
+    const message = event.data;
+    if (!message || message.channel !== BRIDGE_CHANNEL) return;
+
+    if (message.type === BRIDGE_MESSAGE_TYPES.DRAWINGS_UPDATED) {
+      const update = message as DrawingsUpdatedMessage;
+      const { totalDrawings, positions, symbol, timestamp } = update.payload;
+
+      latestPositions = positions;
+      latestSymbol = symbol;
+
+      // Synchronize with metadata store
+      const positionsWithMeta = await store.syncWithDrawings(positions, symbol);
+
+      // Update UI panel
+      panel.setPositions(positionsWithMeta, symbol);
+
+      console.log(
+        `[Backtest Assistant] Snapshot synchronized [${new Date(timestamp).toLocaleTimeString()}]: ` +
+        `${positions.length} position drawings with metadata (total chart drawings: ${totalDrawings})` +
+        (symbol ? ` [${symbol}]` : ""),
       );
+
+      if (positionsWithMeta.length > 0) {
+        console.table(
+          positionsWithMeta.map((p: PositionWithMetadata) => ({
+            id: p.id,
+            type: p.type,
+            entry: p.prices.entry,
+            stopLoss: p.prices.stopLoss,
+            takeProfit: p.prices.takeProfit,
+            tradeType: p.metadata.type || "(none)",
+            breakTime: p.metadata.breakEntryTime || "(none)",
+            notes: p.metadata.notes || "(none)",
+          })),
+        );
+      }
     }
-  }
-});
+  });
 }

@@ -69,6 +69,7 @@ export interface TradingViewApi {
 export interface DrawingsUpdatedPayload {
   totalDrawings: number;
   positions: PositionDrawing[];
+  symbol?: string;
   timestamp: number;
 }
 
