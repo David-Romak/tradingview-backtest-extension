@@ -6,13 +6,13 @@
   "permissions": ["storage"],
   "content_scripts": [
     {
-      "matches": ["https://www.tradingview.com/*"],
+      "matches": ["https://*.tradingview.com/*", "https://tradingview.com/*"],
       "js": ["dist/page-bridge.js"],
       "run_at": "document_idle",
       "world": "MAIN"
     },
     {
-      "matches": ["https://www.tradingview.com/*"],
+      "matches": ["https://*.tradingview.com/*", "https://tradingview.com/*"],
       "js": ["dist/content.js"],
       "run_at": "document_idle",
       "world": "ISOLATED"

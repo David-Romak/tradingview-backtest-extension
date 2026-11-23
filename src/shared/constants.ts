@@ -1,0 +1,11 @@
+export const BRIDGE_CHANNEL = "BACKTEST_ASSISTANT_BRIDGE";
+
+export const BRIDGE_MESSAGE_TYPES = {
+  DRAWINGS_UPDATED: "DRAWINGS_UPDATED",
+  SET_STOP_LOSS: "SET_STOP_LOSS",
+  PING: "PING",
+  PONG: "PONG",
+} as const;
+
+export type BridgeMessageType =
+  (typeof BRIDGE_MESSAGE_TYPES)[keyof typeof BRIDGE_MESSAGE_TYPES];

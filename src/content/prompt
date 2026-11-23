@@ -1,0 +1,443 @@
+# Project Handover: TradingView Backtest Assistant
+
+## Role
+
+Act as the senior TypeScript engineer responsible for designing, implementing, testing, and maintaining this Chrome extension.
+
+You have ownership of the implementation. Don't merely suggest code snippets or give me instructions to implement things manually. Inspect the repository, make the changes, run the tests, diagnose failures, and report verified results.
+
+Explain important architectural decisions and their reasoning.
+
+---
+
+## 1. Project objective
+
+Build a Chrome extension for automating manual Forex strategy backtesting on TradingView.
+
+My workflow:
+
+1. I open a historical Forex chart.
+2. I draw native TradingView Long Position or Short Position drawings.
+3. I manually determine the entry and take-profit levels.
+4. The extension automatically adjusts stop-loss to maintain a configurable risk-to-reward ratio, defaulting to 1.5.
+5. I enter three pieces of metadata for each drawing:
+   - Trade type.
+   - Break time – entry time.
+   - Notes (optional).
+6. When I finish backtesting, I export all position drawings from the active chart.
+7. The extension calculates trade outcomes and historical metrics using candle data.
+8. I export the resulting dataset to CSV/Excel for subsequent AI analysis.
+
+Only Forex instruments are in scope.
+
+## 2. Technology
+
+- TypeScript
+- Chrome Extension Manifest V3
+- esbuild
+- Chrome Storage API
+- No frontend framework unless a genuine requirement emerges.
+- No backend initially.
+
+The project already exists. Inspect its current files before modifying anything.
+
+Initial structure:
+
+```text
+tradingview-backtest-extension/
+├── src/
+│   ├── content/
+│   │   └── index.ts
+│   ├── tradingview/
+│   │   ├── adapter.ts
+│   │   ├── drawings.ts
+│   │   ├── page-bridge.ts
+│   │   └── types.ts
+│   ├── metadata/
+│   │   ├── store.ts
+│   │   └── types.ts
+│   └── shared/
+│       └── constants.ts
+├── manifest.json
+├── package.json
+└── tsconfig.json
+```
+
+Some files may still contain experimental or incomplete implementations.
+
+## 3. Critical TradingView reverse-engineering discoveries
+
+We have already investigated TradingView's internal objects extensively.
+
+Do not repeat this investigation unless implementation reveals a specific unresolved issue.
+
+### Accessing the chart
+
+In TradingView's page JavaScript environment:
+
+```javascript
+window.TradingViewApi.activeChart();
+```
+
+Retrieve drawings using:
+
+```javascript
+const chart = window.TradingViewApi.activeChart();
+const shapes = chart.getAllShapes();
+```
+
+`getAllShapes()` returns lightweight drawing descriptors:
+
+```javascript
+[
+  { id: "HcB3rI", name: "short_position" },
+  { id: "HnuPOQ", name: "long_position" },
+];
+```
+
+It returns drawings from the chart model, not just those visible in the viewport.
+
+Position types:
+
+```text
+long_position
+short_position
+```
+
+Other drawing types include:
+
+```text
+trend_line
+fib_retracement
+```
+
+The descriptors do not expose an `entity` property.
+
+### Position source properties
+
+We previously established that the underlying position source exposes:
+
+```javascript
+source._properties.entryPrice.value();
+source._properties.stopPrice.value();
+source._properties.targetPrice.value();
+```
+
+The corresponding stop and target setters exist:
+
+```javascript
+source._properties.stopPrice.setValue(price);
+source._properties.targetPrice.setValue(price);
+```
+
+The actual source must be resolved from TradingView's internal model. Do not assume that `shape.entity` exists or that `_lineDataSources` is necessarily at a particular object path.
+
+Inspect the actual object graph and reuse the previously established source-resolution findings where possible.
+
+### Position geometry
+
+The position source's logical points are:
+
+- 0: Entry
+- 1: Right-side time endpoint
+- 2: Stop-loss
+- 3: Take-profit
+
+The underlying source stores three points. Stop and target positions are calculated from their respective prices.
+
+We also investigated `source.setPoint()`, `entity.changePoint()`, `entity.setRawPoint()` and `entity.setPoints()`.
+
+The price setters are already known to work visually. Do not spend time investigating undo functionality. Undo support is explicitly unnecessary for this project.
+
+### Chart initialization
+
+TradingView's API can exist before drawings have finished restoring.
+
+Observed behaviour:
+
+| Time after loading | Drawing count |
+| ------------------ | ------------: |
+| Initial            |             0 |
+| 5 seconds          |             0 |
+| 20 seconds         |             8 |
+| 60 seconds         |             8 |
+
+Do not rely on a fixed five-second delay.
+
+Implement reliable chart initialization and subsequent drawing-change detection.
+
+## 4. Critical extension architecture
+
+Chrome content scripts run in an isolated JavaScript world.
+
+We verified:
+
+- `window.TradingViewApi` is accessible in the MAIN world.
+- It is `undefined` in the ISOLATED world.
+- Both scripts can execute successfully on TradingView.
+
+Therefore, use two execution environments:
+
+### MAIN world: Page bridge
+
+Responsibilities:
+
+- Access TradingView internals.
+- Resolve drawing sources.
+- Read position properties.
+- Modify SL when instructed by the RR manager.
+- Observe chart drawing changes.
+- Extract historical candle information when needed.
+
+### ISOLATED world: Extension
+
+Responsibilities:
+
+- Metadata management.
+- Chrome storage.
+- Extension UI.
+- RR configuration.
+- Export orchestration.
+- CSV generation.
+
+Communication should use a carefully validated messaging bridge.
+
+Do not expose privileged extension APIs to the webpage.
+
+Validate message origin, source, channel, message type and payload structure. Remember that webpage scripts can potentially send forged messages; never trust page messages as authenticated instructions.
+
+## 5. Automatic RR management
+
+The user owns:
+
+- Entry price.
+- Take-profit price.
+
+The extension owns:
+
+- Stop-loss price while automation is enabled.
+
+Default RR: 1.5.
+
+Configurable through the extension UI.
+
+Formulas:
+
+For BUY:
+
+```text
+SL = Entry - (TP - Entry) / RR
+```
+
+For SELL:
+
+```text
+SL = Entry + (Entry - TP) / RR
+```
+
+The extension must:
+
+- Recalculate when entry changes.
+- Recalculate when TP changes.
+- Avoid reacting recursively to its own SL changes.
+- Validate that TP is on the correct side of entry.
+- Respect Forex tick size and price precision.
+- Record the actual RR after valid tick rounding.
+- Support enable/disable.
+- Avoid modifying unrelated drawings.
+
+Do not falsely claim an exact 1.5 RR if the instrument's tick size makes it impossible.
+
+## 6. Drawing-managed metadata
+
+Every position drawing must have its own metadata record associated with its unique drawing ID.
+
+Three manually entered fields:
+
+```typescript
+interface TradeMetadata {
+  type: string;
+  breakEntryTime: string;
+  notes: string;
+}
+```
+
+The user does not need to provide type definitions to the extension. Those definitions belong to the later AI analysis process.
+
+Requirements:
+
+- Metadata remains associated with the correct drawing.
+- Metadata survives page reloads.
+- Metadata can be edited.
+- Duplicate drawings must not share metadata accidentally.
+- Deleted drawings must not leave misleading orphan records.
+- Handle chart reloads and symbol changes carefully.
+
+## 7. Exported trade schema
+
+Preserve these original spreadsheet columns and semantics:
+
+```text
+date
+type
+Break-time entry-time
+bias
+entry price
+tp
+sl
+result
+at
+dd
+RR
+notes
+```
+
+Meanings:
+
+- `date`: historical entry date, not export date.
+- `type`: manually entered setup classification.
+- `Break-time entry-time`: manually entered breakout and entry times.
+- `bias`: buy or sell.
+- `entry price`: historical entry price.
+- `tp`: distance to TP in pips.
+- `sl`: distance to SL in pips.
+- `result`: TP or SL.
+- `at`: historical time when TP or SL was reached.
+- `dd`: user-defined excursion metric.
+- `RR`: actual risk-to-reward ratio.
+- `notes`: optional user notes.
+
+Also add:
+
+```text
+MFE
+MAE
+```
+
+Definitions:
+
+- MFE: maximum favourable excursion after entry.
+- MAE: maximum adverse excursion after entry.
+
+Preserve the user's DD convention:
+
+- If the trade ends in SL, DD = MFE.
+- If the trade ends in TP, DD = MAE.
+
+Store MFE and MAE independently even though DD is derived from them.
+
+## 8. Historical trade analysis
+
+Perform the historical analysis when the user requests export.
+
+For each drawing:
+
+1. Identify historical entry timestamp.
+2. Retrieve relevant candle data after entry.
+3. Determine which level was reached first: TP or SL.
+4. Calculate result.
+5. Calculate the time of the outcome.
+6. Calculate MFE.
+7. Calculate MAE.
+8. Calculate DD.
+9. Calculate actual RR.
+
+Important: if a candle touches both TP and SL, OHLC data alone cannot establish which happened first.
+
+Use lower-timeframe candles where available. If the sequence remains uncertain, mark the result as ambiguous rather than guessing.
+
+Investigate reliable historical candle access through TradingView's internal chart data. Do not invent an API or assume historical data is fully loaded.
+
+## 9. Forex calculations
+
+Support standard pip conventions:
+
+- Most non-JPY pairs: 0.0001.
+- JPY pairs: 0.01.
+
+Use symbol metadata and tick-size information where available. Keep pip convention configurable where necessary.
+
+All exported TP, SL, MFE and MAE distances should be in pips.
+
+## 10. Implementation plan
+
+Work incrementally:
+
+**Phase 1 — TradingView adapter**
+
+- Resolve active chart.
+- Resolve drawing sources.
+- Extract position data.
+- Detect chart readiness.
+- Detect added, changed and removed drawings.
+
+**Phase 2 — Metadata**
+
+- Implement metadata storage.
+- Associate records with drawing IDs.
+- Add metadata editing UI.
+
+**Phase 3 — RR automation**
+
+- Implement configurable RR.
+- Implement safe SL updates.
+- Test long and short drawings.
+
+**Phase 4 — Historical analysis**
+
+- Investigate candle access.
+- Calculate result, AT, MFE, MAE and DD.
+- Handle ambiguous outcomes.
+
+**Phase 5 — Export**
+
+- CSV generation.
+- Validate output against the original spreadsheet schema.
+- Add Excel support if appropriate.
+
+**Phase 6 — Integration and reliability**
+
+- Test page reloads.
+- Test symbol changes.
+- Test drawing deletion and duplication.
+- Test delayed TradingView initialization.
+- Test large drawing collections.
+
+## 11. Engineering expectations
+
+- Use strict TypeScript.
+- Avoid `any` except at the undocumented TradingView integration boundary.
+- Isolate all undocumented TradingView APIs in one adapter.
+- Don't create speculative abstractions.
+- Don't duplicate existing functionality.
+- Write tests for our own calculation and data-management logic.
+- Use real TradingView objects for integration validation.
+- Never silently discard trades or metadata.
+- Never fabricate trade outcomes.
+- Keep the extension maintainable and modular.
+
+## 12. First task
+
+Do not implement everything immediately.
+
+First:
+
+1. Inspect the existing repository.
+2. Inspect the current manifest and build scripts.
+3. Identify incomplete or incorrect implementations.
+4. Resolve the actual TradingView position-source lookup.
+5. Demonstrate successful extraction of all four existing position drawings, including entry, SL and TP.
+6. Add a repeatable verification procedure.
+
+Then proceed through the phases.
+
+At each milestone, report:
+
+- What was implemented.
+- Why the design was chosen.
+- Files changed.
+- Tests executed.
+- Actual test results.
+- Remaining uncertainties.
+
+Take ownership of the coding work. Don't ask me to repeat discoveries already documented here.
