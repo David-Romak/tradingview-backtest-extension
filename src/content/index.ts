@@ -1,5 +1,7 @@
 import { MetadataStore } from "../metadata/store";
 import type { PositionWithMetadata, TradeMetadata } from "../metadata/types";
+import { RRManager } from "../rr/manager";
+import type { RRConfig } from "../rr/types";
 import { BRIDGE_CHANNEL, BRIDGE_MESSAGE_TYPES } from "../shared/constants";
 import type { DrawingsUpdatedMessage, PositionDrawing } from "../tradingview/types";
 import { BacktestPanel } from "./panel";
@@ -13,29 +15,74 @@ const globalObj = window as unknown as Record<string, unknown>;
 if (!globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__) {
   globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__ = true;
 
+  const RR_STORAGE_KEY = "tv_bt_rr_config";
   const store = new MetadataStore();
   let latestPositions: PositionDrawing[] = [];
   let latestSymbol: string | undefined;
 
-  const panel = new BacktestPanel({
-    onMetadataChange: async (drawingId: string, update: Partial<TradeMetadata>) => {
-      const pos = latestPositions.find((p) => p.id === drawingId);
-      await store.saveMetadata(drawingId, update, {
-        positionType: pos?.type,
-        prices: pos?.prices,
-        entryTime: pos?.entryTime,
-        symbol: latestSymbol,
-      });
+  let rrManager: RRManager;
+
+  const panel = new BacktestPanel(
+    {
+      onMetadataChange: async (drawingId: string, update: Partial<TradeMetadata>) => {
+        const pos = latestPositions.find((p) => p.id === drawingId);
+        await store.saveMetadata(drawingId, update, {
+          positionType: pos?.type,
+          prices: pos?.prices,
+          entryTime: pos?.entryTime,
+          symbol: latestSymbol,
+        });
+      },
+      onCleanupOrphans: async () => {
+        const activeIds = latestPositions.map((p) => p.id);
+        const cleaned = await store.cleanupOrphans(activeIds);
+        if (cleaned.length > 0) {
+          const synced = await store.syncWithDrawings(latestPositions, latestSymbol);
+          panel.setPositions(synced, latestSymbol);
+        }
+      },
+      onRRConfigChange: (config: RRConfig) => {
+        rrManager.setConfig(config, latestPositions, latestSymbol);
+        if (typeof chrome !== "undefined" && chrome.storage?.local) {
+          chrome.storage.local.set({ [RR_STORAGE_KEY]: config });
+        }
+      },
     },
-    onCleanupOrphans: async () => {
-      const activeIds = latestPositions.map((p) => p.id);
-      const cleaned = await store.cleanupOrphans(activeIds);
-      if (cleaned.length > 0) {
-        const synced = await store.syncWithDrawings(latestPositions, latestSymbol);
-        panel.setPositions(synced, latestSymbol);
+    { enabled: true, defaultRR: 1.5 },
+  );
+
+  rrManager = new RRManager(
+    {
+      onApplyStopLoss: (drawingId: string, stopLoss: number) => {
+        console.log(
+          `[Backtest Assistant] Auto-RR applying Stop-Loss to ${drawingId}: ${stopLoss}`,
+        );
+        window.postMessage(
+          {
+            channel: BRIDGE_CHANNEL,
+            type: BRIDGE_MESSAGE_TYPES.SET_STOP_LOSS,
+            payload: { drawingId, stopLoss },
+          },
+          window.location.origin,
+        );
+      },
+      onConfigChange: (config: RRConfig) => {
+        panel.setRRConfig(config);
+      },
+    },
+    { enabled: true, defaultRR: 1.5 },
+  );
+
+  // Restore saved RR config from chrome.storage
+  if (typeof chrome !== "undefined" && chrome.storage?.local) {
+    chrome.storage.local.get([RR_STORAGE_KEY], (res) => {
+      if (res && res[RR_STORAGE_KEY]) {
+        const saved = res[RR_STORAGE_KEY] as RRConfig;
+        rrManager.setConfig(saved);
+        panel.setRRConfig(saved);
       }
-    },
-  });
+    });
+  }
 
   // Mount panel into the page
   panel.mount();
@@ -54,6 +101,9 @@ if (!globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__) {
 
       latestPositions = positions;
       latestSymbol = symbol;
+
+      // Process automatic RR adjustments (only triggers when Entry or TP changes)
+      rrManager.processPositions(positions, symbol);
 
       // Synchronize with metadata store
       const positionsWithMeta = await store.syncWithDrawings(positions, symbol);

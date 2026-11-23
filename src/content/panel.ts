@@ -1,4 +1,6 @@
 import type { PositionWithMetadata, TradeMetadata } from "../metadata/types";
+import { calculateStopLoss } from "../rr/calculator";
+import type { RRCalculationResult, RRConfig } from "../rr/types";
 
 export interface PanelCallbacks {
   onMetadataChange: (
@@ -6,6 +8,7 @@ export interface PanelCallbacks {
     metadata: Partial<TradeMetadata>,
   ) => void;
   onCleanupOrphans?: () => void;
+  onRRConfigChange?: (config: RRConfig) => void;
 }
 
 export function sortPositionsNewestFirst(
@@ -35,9 +38,16 @@ export class BacktestPanel {
   private callbacks: PanelCallbacks;
   private isMinimized = false;
   private activeSymbol = "";
+  private rrConfig: RRConfig = { enabled: true, defaultRR: 1.5 };
 
-  constructor(callbacks: PanelCallbacks) {
+  constructor(callbacks: PanelCallbacks, initialRRConfig?: Partial<RRConfig>) {
     this.callbacks = callbacks;
+    if (initialRRConfig) {
+      this.rrConfig = {
+        enabled: initialRRConfig.enabled ?? true,
+        defaultRR: initialRRConfig.defaultRR ?? 1.5,
+      };
+    }
   }
 
   mount(): void {
@@ -89,6 +99,16 @@ export class BacktestPanel {
     this.render();
   }
 
+  setRRConfig(config: Partial<RRConfig>): void {
+    if (typeof config.enabled === "boolean") {
+      this.rrConfig.enabled = config.enabled;
+    }
+    if (typeof config.defaultRR === "number" && config.defaultRR > 0) {
+      this.rrConfig.defaultRR = config.defaultRR;
+    }
+    this.render();
+  }
+
   getPositions(): PositionWithMetadata[] {
     return this.positions;
   }
@@ -123,6 +143,7 @@ export class BacktestPanel {
           <span class="pill-dot"></span>
           <span class="pill-title">Backtest Assistant</span>
           <span class="pill-badge">${this.positions.length}</span>
+          ${this.rrConfig.enabled ? `<span class="pill-rr">RR ${this.rrConfig.defaultRR}</span>` : ""}
         </div>
       `;
       this.shadow.getElementById("btn-toggle")?.addEventListener("click", () => {
@@ -137,7 +158,7 @@ export class BacktestPanel {
         <div class="empty-state">
           <div class="empty-icon">📊</div>
           <div class="empty-title">No Positions Detected</div>
-          <div class="empty-desc">Draw a Long or Short Position on TradingView to begin recording metadata.</div>
+          <div class="empty-desc">Draw a Long or Short Position on TradingView to begin. Stop-loss will automatically adjust to 1:${this.rrConfig.defaultRR} RR.</div>
         </div>
       `
         : this.positions
@@ -155,6 +176,28 @@ export class BacktestPanel {
           </div>
           <div class="header-right">
             <button class="icon-btn" id="btn-minimize" title="Minimize">−</button>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <div class="toolbar-item">
+            <label class="toggle-label" title="Enable or disable automatic Stop-Loss adjustments">
+              <input type="checkbox" id="chk-auto-rr" ${this.rrConfig.enabled ? "checked" : ""} />
+              <span>Auto SL</span>
+            </label>
+          </div>
+          <div class="toolbar-item">
+            <span class="toolbar-label">Target RR:</span>
+            <input 
+              type="number" 
+              id="input-target-rr" 
+              class="toolbar-input" 
+              step="0.1" 
+              min="0.1" 
+              max="20"
+              value="${this.rrConfig.defaultRR}" 
+              title="Target Risk-to-Reward ratio (default 1.5)"
+            />
           </div>
         </div>
 
@@ -193,9 +236,17 @@ export class BacktestPanel {
     const typeLabel = isLong ? "LONG" : "SHORT";
     const typeBadgeClass = isLong ? "badge-long" : "badge-short";
 
+    const calc = calculateStopLoss({
+      type: pos.type,
+      entry: pos.prices.entry,
+      takeProfit: pos.prices.takeProfit,
+      targetRR: this.rrConfig.defaultRR,
+      symbol: this.activeSymbol,
+    });
+
     const risk = Math.abs(pos.prices.entry - pos.prices.stopLoss);
     const reward = Math.abs(pos.prices.takeProfit - pos.prices.entry);
-    const rr = risk > 0 ? (reward / risk).toFixed(2) : "N/A";
+    const actualRR = risk > 0 ? (reward / risk).toFixed(2) : "N/A";
 
     const dateStr = pos.entryTime
       ? new Date(pos.entryTime * 1000).toLocaleString(undefined, {
@@ -206,6 +257,10 @@ export class BacktestPanel {
         })
       : "N/A";
 
+    const warningHtml = !calc.isValid
+      ? `<div class="warning-banner" title="${calc.error}">⚠ ${calc.error}</div>`
+      : "";
+
     return `
       <div class="card" data-drawing-id="${pos.id}">
         <div class="card-header">
@@ -215,9 +270,11 @@ export class BacktestPanel {
             <span class="entry-date">${dateStr}</span>
           </div>
           <div class="card-header-right">
-            <span class="rr-badge">1:${rr} RR</span>
+            <span class="rr-badge" title="Actual Risk-Reward Ratio">1:${actualRR} RR</span>
           </div>
         </div>
+
+        ${warningHtml}
 
         <div class="prices-row">
           <div class="price-chip">Entry: <b>${pos.prices.entry}</b></div>
@@ -281,13 +338,37 @@ export class BacktestPanel {
       }
     });
 
+    // Auto-RR toggle
+    const chkAutoRR = this.shadow.getElementById("chk-auto-rr") as HTMLInputElement | null;
+    chkAutoRR?.addEventListener("change", () => {
+      this.rrConfig.enabled = chkAutoRR.checked;
+      if (this.callbacks.onRRConfigChange) {
+        this.callbacks.onRRConfigChange({ ...this.rrConfig });
+      }
+    });
+
+    // Target RR input
+    const inputTargetRR = this.shadow.getElementById("input-target-rr") as HTMLInputElement | null;
+    const updateTargetRR = () => {
+      const val = parseFloat(inputTargetRR?.value ?? "");
+      if (Number.isFinite(val) && val > 0) {
+        this.rrConfig.defaultRR = val;
+        if (this.callbacks.onRRConfigChange) {
+          this.callbacks.onRRConfigChange({ ...this.rrConfig });
+        }
+      }
+    };
+    inputTargetRR?.addEventListener("change", updateTargetRR);
+    inputTargetRR?.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        updateTargetRR();
+      }
+    });
+    inputTargetRR?.addEventListener("keyup", (e) => e.stopPropagation());
+
     const inputs = this.shadow.querySelectorAll<HTMLInputElement>(".input-field");
     inputs.forEach((input) => {
-      // Isolate keyboard events directly at the input element level
-      // Calling stopPropagation() ensures the event NEVER bubbles to document or window,
-      // which completely prevents TradingView's global shortcut listeners from intercepting it.
-      // Crucially, we DO NOT call preventDefault(), so native typing, cursor keys, selection,
-      // Backspace, Delete, Ctrl+A, and paste all function completely normally.
       const stopKeyHandler = (e: KeyboardEvent) => {
         e.stopPropagation();
       };
@@ -385,6 +466,15 @@ export class BacktestPanel {
           font-size: 11px;
           font-weight: 700;
         }
+        .pill-rr {
+          background: rgba(41, 98, 255, 0.2);
+          color: #2962ff;
+          border: 1px solid rgba(41, 98, 255, 0.4);
+          padding: 2px 6px;
+          border-radius: 10px;
+          font-size: 10px;
+          font-weight: 600;
+        }
 
         .panel {
           width: 380px;
@@ -437,6 +527,53 @@ export class BacktestPanel {
         .icon-btn:hover {
           background: #2a2e39;
           color: #ffffff;
+        }
+
+        .toolbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 8px 14px;
+          background: #141720;
+          border-bottom: 1px solid #2a2e39;
+          font-size: 11px;
+        }
+        .toolbar-item {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .toggle-label {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          cursor: pointer;
+          font-weight: 600;
+          color: #d1d4dc;
+          user-select: none;
+        }
+        .toggle-label input[type="checkbox"] {
+          accent-color: #2962ff;
+          cursor: pointer;
+        }
+        .toolbar-label {
+          color: #787b86;
+          font-weight: 600;
+        }
+        .toolbar-input {
+          width: 55px;
+          background: #1e222d;
+          border: 1px solid #2a2e39;
+          border-radius: 4px;
+          color: #ffffff;
+          padding: 3px 6px;
+          font-size: 11px;
+          font-weight: 600;
+          text-align: center;
+          outline: none;
+        }
+        .toolbar-input:focus {
+          border-color: #2962ff;
         }
 
         .cards-container {
@@ -502,6 +639,17 @@ export class BacktestPanel {
           font-weight: 600;
           padding: 2px 6px;
           border-radius: 4px;
+        }
+
+        .warning-banner {
+          background: rgba(242, 54, 69, 0.15);
+          color: #f23645;
+          border: 1px solid rgba(242, 54, 69, 0.3);
+          border-radius: 4px;
+          padding: 4px 8px;
+          font-size: 10px;
+          margin-bottom: 8px;
+          font-weight: 500;
         }
 
         .prices-row {
