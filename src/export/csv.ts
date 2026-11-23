@@ -62,13 +62,14 @@ export function createCSVTradeRow(
   position: PositionWithMetadata,
   analysis?: TradeAnalysisResult,
   symbol?: string,
+  timezone?: string,
 ): CSVTradeRow {
   const bias: "buy" | "sell" = position.type === "long_position" ? "buy" : "sell";
   const pipSize = getPipSize(symbol, position.prices.entry);
 
   if (analysis) {
     return {
-      date: analysis.entryDateStr || formatDateTime(position.entryTime),
+      date: analysis.entryDateStr || formatDateTime(position.entryTime, timezone),
       type: position.metadata?.type || "",
       breakTimeEntryTime: position.metadata?.breakEntryTime || "",
       bias,
@@ -93,7 +94,7 @@ export function createCSVTradeRow(
   const actualRR = slDistance > 0 ? Number((tpDistance / slDistance).toFixed(4)) : 0;
 
   return {
-    date: formatDateTime(position.entryTime),
+    date: formatDateTime(position.entryTime, timezone),
     type: position.metadata?.type || "",
     breakTimeEntryTime: position.metadata?.breakEntryTime || "",
     bias,
@@ -119,9 +120,10 @@ export function exportPositionsToCSV(
   positions: PositionWithMetadata[],
   analysisResults?: Map<string, TradeAnalysisResult>,
   symbol?: string,
+  timezone?: string,
 ): string {
   const rows = positions.map((p) =>
-    createCSVTradeRow(p, analysisResults?.get(p.id), symbol),
+    createCSVTradeRow(p, analysisResults?.get(p.id), symbol, timezone),
   );
   return generateCSV(rows);
 }

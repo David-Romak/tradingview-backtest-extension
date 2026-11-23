@@ -23,8 +23,10 @@ if (globalObj.__BACKTEST_ASSISTANT_PAGE_BRIDGE_INITIALIZED__) {
 // Start observing chart drawings
 observer.start((positions, totalDrawings) => {
   let symbol: string | undefined;
+  let chartTimezone: string | undefined;
   const chart = adapter.getActiveChart();
   if (chart) {
+    chartTimezone = adapter.getChartTimezone();
     const chartObj = chart as Record<string, unknown>;
     if (typeof chartObj.symbol === "function") {
       try {
@@ -40,6 +42,7 @@ observer.start((positions, totalDrawings) => {
       totalDrawings,
       positions,
       symbol,
+      chartTimezone,
       timestamp: Date.now(),
     },
   };
@@ -101,6 +104,7 @@ window.addEventListener("message", async (event: MessageEvent) => {
 
     const positions = adapter.getPositionDrawings(chart);
     const candles = await adapter.getCandleData(chart);
+    const chartTimezone = adapter.getChartTimezone();
     const chartObj = chart as Record<string, unknown>;
     let symbol: string | undefined;
     if (typeof chartObj.symbol === "function") {
@@ -110,7 +114,7 @@ window.addEventListener("message", async (event: MessageEvent) => {
     }
 
     console.log(
-      `[Backtest Assistant: Page Bridge] Running historical analysis for ${positions.length} trades with ${candles.length} historical candles...`,
+      `[Backtest Assistant: Page Bridge] Running historical analysis for ${positions.length} trades with ${candles.length} historical candles... (chart timezone: ${chartTimezone})`,
     );
 
     const results = positions.map((pos) => {
@@ -135,6 +139,7 @@ window.addEventListener("message", async (event: MessageEvent) => {
         entryTime,
         symbol,
         candles,
+        chartTimezone,
       });
     });
 
@@ -145,6 +150,7 @@ window.addEventListener("message", async (event: MessageEvent) => {
         payload: {
           results,
           totalCandles: candles.length,
+          chartTimezone,
           timestamp: Date.now(),
         },
       },

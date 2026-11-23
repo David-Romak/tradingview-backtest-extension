@@ -44,6 +44,7 @@ export class BacktestPanel {
   private rrConfig: RRConfig = { enabled: true, defaultRR: 1.5 };
   private analysisResults: Map<string, TradeAnalysisResult> = new Map();
   private isAnalyzing = false;
+  private chartTimezone = "UTC";
 
   constructor(callbacks: PanelCallbacks, initialRRConfig?: Partial<RRConfig>) {
     this.callbacks = callbacks;
@@ -137,6 +138,17 @@ export class BacktestPanel {
 
   getAnalysisResults(): Map<string, TradeAnalysisResult> {
     return this.analysisResults;
+  }
+
+  setChartTimezone(tz?: string): void {
+    if (tz && tz.trim() && this.chartTimezone !== tz.trim()) {
+      this.chartTimezone = tz.trim();
+      this.render();
+    }
+  }
+
+  getChartTimezone(): string {
+    return this.chartTimezone;
   }
 
   getContainer(): HTMLDivElement | null {
@@ -309,14 +321,22 @@ export class BacktestPanel {
     const reward = Math.abs(pos.prices.takeProfit - pos.prices.entry);
     const actualRR = risk > 0 ? (reward / risk).toFixed(2) : "N/A";
 
-    const dateStr = pos.entryTime
-      ? new Date(pos.entryTime * 1000).toLocaleString(undefined, {
+    const tz = this.chartTimezone || "UTC";
+    let dateStr = "N/A";
+    if (pos.entryTime) {
+      try {
+        dateStr = new Intl.DateTimeFormat(undefined, {
+          timeZone: tz,
           month: "short",
           day: "numeric",
           hour: "2-digit",
           minute: "2-digit",
-        })
-      : "N/A";
+          hourCycle: "h23",
+        }).format(new Date(pos.entryTime * 1000));
+      } catch {
+        dateStr = new Date(pos.entryTime * 1000).toISOString().slice(5, 16).replace("T", " ");
+      }
+    }
 
     const warningHtml = !calc.isValid
       ? `<div class="warning-banner" title="${calc.error}">⚠ ${calc.error}</div>`

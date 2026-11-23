@@ -21,6 +21,8 @@ export interface TradeAnalysisInput {
   symbol?: string;
   pipSize?: number;
   candles: CandleBar[];
+  /** IANA timezone of the TradingView chart display (e.g. "Europe/Moscow", "UTC"). */
+  chartTimezone?: string;
 }
 
 export interface TradeAnalysisResult {

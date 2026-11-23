@@ -6,13 +6,36 @@ import type {
   TradeOutcome,
 } from "./types";
 
-export function formatDateTime(timestampInSeconds?: number): string {
+export function formatDateTime(timestampInSeconds?: number, timezone?: string): string {
   if (!timestampInSeconds || !Number.isFinite(timestampInSeconds)) {
     return "";
   }
   const date = new Date(timestampInSeconds * 1000);
-  const pad = (n: number) => String(n).padStart(2, "0");
 
+  if (timezone && timezone !== "UTC") {
+    // Use the chart's display timezone so outcome and entry dates both match the chart axis
+    try {
+      const dtf = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      });
+      const parts = Object.fromEntries(
+        dtf.formatToParts(date).map((p) => [p.type, p.value]),
+      );
+      if (parts.year && parts.month && parts.day && parts.hour && parts.minute) {
+        return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+      }
+    } catch {
+      // Invalid timezone string — fall through to UTC
+    }
+  }
+
+  const pad = (n: number) => String(n).padStart(2, "0");
   const year = date.getUTCFullYear();
   const month = pad(date.getUTCMonth() + 1);
   const day = pad(date.getUTCDate());
@@ -22,13 +45,32 @@ export function formatDateTime(timestampInSeconds?: number): string {
   return `${year}-${month}-${day} ${hours}:${minutes}`;
 }
 
-export function formatDateOnly(timestampInSeconds?: number): string {
+export function formatDateOnly(timestampInSeconds?: number, timezone?: string): string {
   if (!timestampInSeconds || !Number.isFinite(timestampInSeconds)) {
     return "";
   }
   const date = new Date(timestampInSeconds * 1000);
-  const pad = (n: number) => String(n).padStart(2, "0");
 
+  if (timezone && timezone !== "UTC") {
+    try {
+      const dtf = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+      const parts = Object.fromEntries(
+        dtf.formatToParts(date).map((p) => [p.type, p.value]),
+      );
+      if (parts.year && parts.month && parts.day) {
+        return `${parts.year}-${parts.month}-${parts.day}`;
+      }
+    } catch {
+      // Fall through to UTC
+    }
+  }
+
+  const pad = (n: number) => String(n).padStart(2, "0");
   const year = date.getUTCFullYear();
   const month = pad(date.getUTCMonth() + 1);
   const day = pad(date.getUTCDate());
@@ -46,6 +88,7 @@ export function analyzeTrade(input: TradeAnalysisInput): TradeAnalysisResult {
     entryTime,
     symbol,
     candles,
+    chartTimezone,
   } = input;
 
   const bias: "buy" | "sell" = type === "long_position" ? "buy" : "sell";
@@ -63,7 +106,8 @@ export function analyzeTrade(input: TradeAnalysisInput): TradeAnalysisResult {
       ? Math.floor(entryTime / 1000)
       : (entryTime ?? 0);
 
-  const entryDateStr = formatDateTime(normEntryTime);
+  const tz = chartTimezone || "UTC";
+  const entryDateStr = formatDateTime(normEntryTime, tz);
 
   // Normalize all candles to seconds and sort chronologically
   const normCandles: CandleBar[] = candles
@@ -174,7 +218,7 @@ export function analyzeTrade(input: TradeAnalysisInput): TradeAnalysisResult {
         outcomeTime = bar.time;
         maxFavorableDiff = Math.max(maxFavorableDiff, takeProfit - entry);
         maxAdverseDiff = Math.max(maxAdverseDiff, entry - stopLoss);
-        notes = `Ambiguous outcome: single candle touched both TP (${takeProfit}) and SL (${stopLoss}) at ${formatDateTime(bar.time)}`;
+        notes = `Ambiguous outcome: single candle touched both TP (${takeProfit}) and SL (${stopLoss}) at ${formatDateTime(bar.time, tz)}`;
         break;
       }
 
@@ -208,7 +252,7 @@ export function analyzeTrade(input: TradeAnalysisInput): TradeAnalysisResult {
         outcomeTime = bar.time;
         maxFavorableDiff = Math.max(maxFavorableDiff, entry - takeProfit);
         maxAdverseDiff = Math.max(maxAdverseDiff, stopLoss - entry);
-        notes = `Ambiguous outcome: single candle touched both TP (${takeProfit}) and SL (${stopLoss}) at ${formatDateTime(bar.time)}`;
+        notes = `Ambiguous outcome: single candle touched both TP (${takeProfit}) and SL (${stopLoss}) at ${formatDateTime(bar.time, tz)}`;
         break;
       }
 
@@ -260,7 +304,7 @@ export function analyzeTrade(input: TradeAnalysisInput): TradeAnalysisResult {
     entryDateStr,
     result: outcome,
     outcomeTime,
-    outcomeDateStr: outcomeTime ? formatDateTime(outcomeTime) : undefined,
+    outcomeDateStr: outcomeTime ? formatDateTime(outcomeTime, tz) : undefined,
     tpPips,
     slPips,
     actualRR,

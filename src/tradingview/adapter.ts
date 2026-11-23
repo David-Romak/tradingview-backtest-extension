@@ -49,6 +49,156 @@ export class TradingViewAdapter {
     }
   }
 
+  /**
+   * Returns the IANA timezone string that the TradingView chart is currently
+   * displaying (e.g. "America/New_York", "UTC", "Asia/Dubai").
+   * Checks chart.getTimezone(), _timezoneApi, and chartWidget model timeScale.
+   * Falls back to the browser's local timezone if chart API is unavailable.
+   */
+  getChartTimezone(chartInstance?: TradingViewChart): string {
+    try {
+      const chart = chartInstance ?? this.getActiveChart();
+      if (!chart) return this.detectFallbackTimezone();
+      const chartObj = chart as Record<string, unknown>;
+
+      // 1. Direct chart methods
+      if (typeof chartObj.getTimezone === "function") {
+        try {
+          const tz = this.cleanTimezone((chartObj.getTimezone as () => string)());
+          if (tz) return tz;
+        } catch {}
+      }
+      if (typeof chartObj.timezone === "function") {
+        try {
+          const tz = this.cleanTimezone((chartObj.timezone as () => string)());
+          if (tz) return tz;
+        } catch {}
+      }
+
+      // 2. _timezoneApi object
+      const tzApi = chartObj._timezoneApi as Record<string, unknown> | undefined;
+      if (tzApi && typeof tzApi === "object") {
+        if (typeof tzApi.getTimezone === "function") {
+          try {
+            const tz = this.cleanTimezone((tzApi.getTimezone as () => string)());
+            if (tz) return tz;
+          } catch {}
+        }
+        if (typeof tzApi.timezone === "function") {
+          try {
+            const tz = this.cleanTimezone((tzApi.timezone as () => string)());
+            if (tz) return tz;
+          } catch {}
+        }
+        if (typeof tzApi.timezone === "string") {
+          const tz = this.cleanTimezone(tzApi.timezone);
+          if (tz) return tz;
+        }
+        if (tzApi.timezone && typeof (tzApi.timezone as { value?: unknown }).value === "function") {
+          try {
+            const tz = this.cleanTimezone((tzApi.timezone as { value: () => string }).value());
+            if (tz) return tz;
+          } catch {}
+        }
+      }
+
+      // 3. _chartWidget -> model() -> timezone() or timeScale().timezone()
+      if (chartObj._chartWidget && typeof chartObj._chartWidget === "object") {
+        const cw = chartObj._chartWidget as Record<string, unknown>;
+        let model: Record<string, unknown> | null = null;
+        if (typeof cw.model === "function") {
+          try {
+            const m = (cw.model as () => unknown)();
+            if (m && typeof m === "object") model = m as Record<string, unknown>;
+          } catch {}
+        } else if (cw.model && typeof cw.model === "object") {
+          model = cw.model as Record<string, unknown>;
+        }
+        if (model) {
+          if (typeof model.timezone === "function") {
+            try {
+              const tz = this.cleanTimezone((model.timezone as () => string)());
+              if (tz) return tz;
+            } catch {}
+          }
+          if (typeof model.timeScale === "function") {
+            try {
+              const ts = (model.timeScale as () => unknown)();
+              if (ts && typeof ts === "object") {
+                const tsObj = ts as Record<string, unknown>;
+                if (typeof tsObj.timezone === "function") {
+                  const tz = this.cleanTimezone((tsObj.timezone as () => string)());
+                  if (tz) return tz;
+                }
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+
+    return this.detectFallbackTimezone();
+  }
+
+  getTimezoneOffsetSeconds(timestampInSeconds: number, timezone: string): number {
+    if (!timezone || timezone === "UTC") return 0;
+    try {
+      const date = new Date(timestampInSeconds * 1000);
+      const dtf = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23",
+      });
+      const parts = Object.fromEntries(
+        dtf.formatToParts(date).map((p) => [p.type, p.value]),
+      );
+      if (!parts.year || !parts.month || !parts.day || !parts.hour || !parts.minute) {
+        return 0;
+      }
+      const targetDate = new Date(
+        `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second ?? "00"}Z`,
+      );
+      return Math.round((targetDate.getTime() - date.getTime()) / 1000);
+    } catch {
+      return 0;
+    }
+  }
+
+  private cleanTimezone(tz: unknown): string | null {
+    if (typeof tz !== "string" || !tz.trim()) return null;
+    const t = tz.trim();
+    if (t === "Etc/UTC" || t === "UTC" || t === "GMT") return "UTC";
+    if (t === "exchange") return null;
+    try {
+      new Intl.DateTimeFormat(undefined, { timeZone: t });
+      return t;
+    } catch {
+      return null;
+    }
+  }
+
+  private detectFallbackTimezone(): string {
+    // Only fallback to browser local timezone if running in TradingView browser context
+    if (
+      typeof window !== "undefined" &&
+      ((window as unknown as Record<string, unknown>).TradingViewApi ||
+        (window as unknown as Record<string, unknown>).TradingView)
+    ) {
+      if (typeof Intl !== "undefined" && typeof Intl.DateTimeFormat === "function") {
+        try {
+          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          if (tz && this.cleanTimezone(tz)) return tz;
+        } catch {}
+      }
+    }
+    return "UTC";
+  }
+
   getPositionDrawings(chartInstance?: TradingViewChart): PositionDrawing[] {
     const chart = chartInstance ?? this.getActiveChart();
     if (!chart || typeof chart.getAllShapes !== "function") {
@@ -124,7 +274,7 @@ export class TradingViewAdapter {
       takeProfit,
     };
 
-    const points = this.extractPoints(source);
+    const points = this.extractPoints(source, chart);
     // Logical point 0 is the entry point
     const entryTime =
       points && points.length > 0 && points[0]?.time
@@ -434,7 +584,10 @@ export class TradingViewAdapter {
     return null;
   }
 
-  private extractPoints(source: TradingViewSource): PositionPoint[] | undefined {
+  private extractPoints(
+    source: TradingViewSource,
+    chart?: TradingViewChart,
+  ): PositionPoint[] | undefined {
     let rawPoints: unknown = undefined;
 
     if (typeof source.points === "function") {
@@ -491,6 +644,18 @@ export class TradingViewAdapter {
             : 0;
         if (time > 1e11) {
           time = Math.floor(time / 1000);
+        }
+
+        // TradingView drawing points store timestamps in wall-clock time (offset by chart display timezone).
+        // Normalize to true UTC Unix epoch seconds so drawings and price series bars share the exact same timeline.
+        if (time > 0 && chart) {
+          const tz = this.getChartTimezone(chart);
+          if (tz && tz !== "UTC") {
+            const offset = this.getTimezoneOffsetSeconds(time, tz);
+            if (offset !== 0) {
+              time = time - offset;
+            }
+          }
         }
 
         const price =

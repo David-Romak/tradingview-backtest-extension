@@ -19,10 +19,26 @@ describe("Historical Candle Analysis Engine", () => {
       assert.equal(formatted, "2023-11-14");
     });
 
+    it("formats unix timestamp in chart display timezone", () => {
+      // 1700000000 = 2023-11-14 22:13:20 UTC
+      // UTC+3 (e.g. Europe/Moscow) = 2023-11-15 01:13
+      const moscow = formatDateTime(baseEntryTime, "Europe/Moscow");
+      assert.equal(moscow, "2023-11-15 01:13");
+
+      // UTC-5 (e.g. America/New_York) = 2023-11-14 17:13
+      const ny = formatDateTime(baseEntryTime, "America/New_York");
+      assert.equal(ny, "2023-11-14 17:13");
+
+      const moscowDate = formatDateOnly(baseEntryTime, "Europe/Moscow");
+      assert.equal(moscowDate, "2023-11-15");
+    });
+
     it("handles missing or invalid timestamps gracefully", () => {
       assert.equal(formatDateTime(undefined), "");
       assert.equal(formatDateTime(0), "");
       assert.equal(formatDateOnly(undefined), "");
+      // Fallback on invalid timezone
+      assert.equal(formatDateTime(baseEntryTime, "invalid/timezone"), "2023-11-14 22:13");
     });
   });
 
@@ -438,6 +454,69 @@ describe("Historical Candle Analysis Engine", () => {
       const result = analyzeTrade(input);
       assert.equal(result.result, "TP");
       assert.notEqual(result.notes, "No candle data available after entry time");
+    });
+
+    it("formats outcomeDateStr and entryDateStr in chart display timezone", () => {
+      // Bar 1: Entry at 1700000000 (2023-11-14 22:13 UTC => 2023-11-15 01:13 in Moscow UTC+3)
+      // Bar 2: Hits TP at 1700003600 (2023-11-14 23:13 UTC => 2023-11-15 02:13 in Moscow UTC+3)
+      const candles: CandleBar[] = [
+        { time: 1700000000, open: 1.085, high: 1.087, low: 1.084, close: 1.086 },
+        { time: 1700003600, open: 1.086, high: 1.095, low: 1.085, close: 1.094 },
+      ];
+
+      const input: TradeAnalysisInput = {
+        drawingId: "tz_test",
+        type: "long_position",
+        entry: 1.085,
+        stopLoss: 1.08,
+        takeProfit: 1.0925,
+        entryTime: 1700000000,
+        symbol: "FX:EURUSD",
+        candles,
+        chartTimezone: "Europe/Moscow",
+      };
+
+      const result = analyzeTrade(input);
+      assert.equal(result.result, "TP");
+      assert.equal(result.entryDateStr, "2023-11-15 01:13");
+      assert.equal(result.outcomeDateStr, "2023-11-15 02:13");
+    });
+  });
+
+  describe("TradingViewAdapter getChartTimezone", () => {
+    it("reads timezone from chart._timezoneApi.getTimezone()", () => {
+      const adapter = new TradingViewAdapter();
+      const mockChart = {
+        _timezoneApi: {
+          getTimezone: () => "Europe/Moscow",
+        },
+      };
+      // Mock getActiveChart
+      adapter.getActiveChart = () => mockChart as unknown as import("../src/tradingview/types").TradingViewChart;
+      assert.equal(adapter.getChartTimezone(), "Europe/Moscow");
+    });
+
+    it("normalizes Etc/UTC to UTC", () => {
+      const adapter = new TradingViewAdapter();
+      const mockChart = {
+        _timezoneApi: {
+          getTimezone: () => "Etc/UTC",
+        },
+      };
+      adapter.getActiveChart = () => mockChart as unknown as import("../src/tradingview/types").TradingViewChart;
+      assert.equal(adapter.getChartTimezone(), "UTC");
+    });
+
+    it("falls back gracefully when timezone is invalid or missing", () => {
+      const adapter = new TradingViewAdapter();
+      const mockChart = {
+        _timezoneApi: {
+          getTimezone: () => "invalid/tz",
+        },
+      };
+      adapter.getActiveChart = () => mockChart as unknown as import("../src/tradingview/types").TradingViewChart;
+      const tz = adapter.getChartTimezone();
+      assert.ok(typeof tz === "string" && tz.length > 0);
     });
   });
 });

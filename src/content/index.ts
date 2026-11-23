@@ -73,6 +73,7 @@ if (!globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__) {
           positions,
           latestAnalysisResults,
           latestSymbol,
+          panel.getChartTimezone(),
         );
         const filename = `tv-backtest-${latestSymbol || "forex"}-${new Date().toISOString().slice(0, 10)}.csv`;
         downloadCSV(csv, filename);
@@ -130,7 +131,11 @@ if (!globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__) {
 
     if (message.type === BRIDGE_MESSAGE_TYPES.DRAWINGS_UPDATED) {
       const update = message as DrawingsUpdatedMessage;
-      const { totalDrawings, positions, symbol, timestamp } = update.payload;
+      const { totalDrawings, positions, symbol, chartTimezone, timestamp } = update.payload;
+
+      if (chartTimezone) {
+        panel.setChartTimezone(chartTimezone);
+      }
 
       latestPositions = positions;
       latestSymbol = symbol;
@@ -147,7 +152,8 @@ if (!globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__) {
       console.log(
         `[Backtest Assistant] Snapshot synchronized [${new Date(timestamp).toLocaleTimeString()}]: ` +
         `${positions.length} position drawings with metadata (total chart drawings: ${totalDrawings})` +
-        (symbol ? ` [${symbol}]` : ""),
+        (symbol ? ` [${symbol}]` : "") +
+        (chartTimezone ? ` [tz: ${chartTimezone}]` : ""),
       );
 
       // Clean up analysis results for drawings removed from chart
@@ -175,13 +181,18 @@ if (!globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__) {
     }
 
     if (message.type === BRIDGE_MESSAGE_TYPES.HISTORICAL_ANALYSIS_RESULT) {
-      const { results, totalCandles } = message.payload;
+      const { results, totalCandles, chartTimezone } = message.payload;
+      if (chartTimezone) {
+        panel.setChartTimezone(chartTimezone);
+      }
       for (const res of results as TradeAnalysisResult[]) {
         latestAnalysisResults.set(res.drawingId, res);
       }
       panel.setAnalysisResults(latestAnalysisResults);
       console.log(
-        `[Backtest Assistant] Historical candle analysis completed for ${results.length} trades against ${totalCandles} candles.`,
+        `[Backtest Assistant] Historical candle analysis completed for ${results.length} trades against ${totalCandles} candles` +
+        (chartTimezone ? ` (tz: ${chartTimezone})` : "") +
+        ".",
       );
     }
   });

@@ -70,6 +70,7 @@ export interface DrawingsUpdatedPayload {
   totalDrawings: number;
   positions: PositionDrawing[];
   symbol?: string;
+  chartTimezone?: string;
   timestamp: number;
 }
 
@@ -101,6 +102,7 @@ export interface HistoricalAnalysisResultMessage {
   payload: {
     results: import("../analysis/types").TradeAnalysisResult[];
     totalCandles: number;
+    chartTimezone?: string;
     timestamp: number;
   };
 }
