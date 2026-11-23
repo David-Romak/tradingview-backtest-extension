@@ -1,3 +1,4 @@
+import type { TradeAnalysisResult } from "../analysis/types";
 import type { PositionWithMetadata, TradeMetadata } from "../metadata/types";
 import { calculateStopLoss } from "../rr/calculator";
 import type { RRCalculationResult, RRConfig } from "../rr/types";
@@ -9,6 +10,8 @@ export interface PanelCallbacks {
   ) => void;
   onCleanupOrphans?: () => void;
   onRRConfigChange?: (config: RRConfig) => void;
+  onRequestAnalysis?: () => void;
+  onExportCSV?: () => void;
 }
 
 export function sortPositionsNewestFirst(
@@ -39,6 +42,8 @@ export class BacktestPanel {
   private isMinimized = false;
   private activeSymbol = "";
   private rrConfig: RRConfig = { enabled: true, defaultRR: 1.5 };
+  private analysisResults: Map<string, TradeAnalysisResult> = new Map();
+  private isAnalyzing = false;
 
   constructor(callbacks: PanelCallbacks, initialRRConfig?: Partial<RRConfig>) {
     this.callbacks = callbacks;
@@ -113,6 +118,27 @@ export class BacktestPanel {
     return this.positions;
   }
 
+  setAnalysisResults(
+    results: Map<string, TradeAnalysisResult> | TradeAnalysisResult[],
+  ): void {
+    if (Array.isArray(results)) {
+      this.analysisResults = new Map(results.map((r) => [r.drawingId, r]));
+    } else {
+      this.analysisResults = new Map(results);
+    }
+    this.isAnalyzing = false;
+    this.render();
+  }
+
+  setAnalyzing(analyzing: boolean): void {
+    this.isAnalyzing = analyzing;
+    this.render();
+  }
+
+  getAnalysisResults(): Map<string, TradeAnalysisResult> {
+    return this.analysisResults;
+  }
+
   getContainer(): HTMLDivElement | null {
     return this.container;
   }
@@ -180,24 +206,34 @@ export class BacktestPanel {
         </div>
 
         <div class="toolbar">
-          <div class="toolbar-item">
-            <label class="toggle-label" title="Enable or disable automatic Stop-Loss adjustments">
-              <input type="checkbox" id="chk-auto-rr" ${this.rrConfig.enabled ? "checked" : ""} />
-              <span>Auto SL</span>
-            </label>
+          <div class="toolbar-left">
+            <div class="toolbar-item">
+              <label class="toggle-label" title="Enable or disable automatic Stop-Loss adjustments">
+                <input type="checkbox" id="chk-auto-rr" ${this.rrConfig.enabled ? "checked" : ""} />
+                <span>Auto SL</span>
+              </label>
+            </div>
+            <div class="toolbar-item">
+              <span class="toolbar-label">RR:</span>
+              <input 
+                type="number" 
+                id="input-target-rr" 
+                class="toolbar-input" 
+                step="0.1" 
+                min="0.1" 
+                max="20"
+                value="${this.rrConfig.defaultRR}" 
+                title="Target Risk-to-Reward ratio (default 1.5)"
+              />
+            </div>
           </div>
-          <div class="toolbar-item">
-            <span class="toolbar-label">Target RR:</span>
-            <input 
-              type="number" 
-              id="input-target-rr" 
-              class="toolbar-input" 
-              step="0.1" 
-              min="0.1" 
-              max="20"
-              value="${this.rrConfig.defaultRR}" 
-              title="Target Risk-to-Reward ratio (default 1.5)"
-            />
+          <div class="toolbar-right">
+            <button class="action-btn" id="btn-analyze" title="Run historical candle backtest on active drawings">
+              ${this.isAnalyzing ? "⏳ Analyzing..." : "📈 Analyze"}
+            </button>
+            <button class="action-btn secondary" id="btn-export-csv" title="Export trade metrics to CSV matching spreadsheet schema">
+              📥 Export CSV
+            </button>
           </div>
         </div>
 
@@ -206,6 +242,9 @@ export class BacktestPanel {
         </div>
 
         <div class="footer">
+          <div class="footer-stats">
+            ${this.getOutcomeStatsSummary()}
+          </div>
           <button class="footer-btn" id="btn-cleanup" title="Remove stored records for drawings deleted from chart">
             🧹 Clean Deleted Drawings
           </button>
@@ -229,6 +268,28 @@ export class BacktestPanel {
         }
       }
     }
+  }
+
+  private getOutcomeStatsSummary(): string {
+    if (this.analysisResults.size === 0) return "";
+    let tp = 0;
+    let sl = 0;
+    let amb = 0;
+    let open = 0;
+    for (const pos of this.positions) {
+      const res = this.analysisResults.get(pos.id);
+      if (!res) continue;
+      if (res.result === "TP") tp++;
+      else if (res.result === "SL") sl++;
+      else if (res.result === "AMBIGUOUS") amb++;
+      else if (res.result === "OPEN") open++;
+    }
+    const parts: string[] = [];
+    if (tp > 0) parts.push(`<span class="stat-tp">${tp} TP</span>`);
+    if (sl > 0) parts.push(`<span class="stat-sl">${sl} SL</span>`);
+    if (amb > 0) parts.push(`<span class="stat-amb">${amb} AMB</span>`);
+    if (open > 0) parts.push(`<span class="stat-open">${open} OPEN</span>`);
+    return parts.join(" • ");
   }
 
   private renderPositionCard(pos: PositionWithMetadata): string {
@@ -261,6 +322,32 @@ export class BacktestPanel {
       ? `<div class="warning-banner" title="${calc.error}">⚠ ${calc.error}</div>`
       : "";
 
+    const analysis = this.analysisResults.get(pos.id);
+
+    const outcomeBadgeHtml = analysis
+      ? `<span class="badge badge-${analysis.result.toLowerCase()}" title="Historical outcome">${analysis.result}</span>`
+      : "";
+
+    const analysisRowHtml = analysis
+      ? `
+        <div class="analysis-row">
+          <div class="metric-chip mfe" title="Maximum Favorable Excursion (pips)">MFE: <b>+${analysis.mfePips}p</b></div>
+          <div class="metric-chip mae" title="Maximum Adverse Excursion (pips)">MAE: <b>-${analysis.maePips}p</b></div>
+          <div class="metric-chip dd" title="Drawdown (user convention: SL=MFE, TP=MAE)">DD: <b>${analysis.ddPips}p</b></div>
+          ${
+            analysis.outcomeDateStr
+              ? `<div class="metric-chip outcome-time" title="Outcome Time">@ <b>${analysis.outcomeDateStr}</b></div>`
+              : ""
+          }
+        </div>
+        ${
+          analysis.notes
+            ? `<div class="analysis-warning" title="${this.escapeHtml(analysis.notes)}">⚠ ${this.escapeHtml(analysis.notes)}</div>`
+            : ""
+        }
+      `
+      : "";
+
     return `
       <div class="card" data-drawing-id="${pos.id}">
         <div class="card-header">
@@ -270,6 +357,7 @@ export class BacktestPanel {
             <span class="entry-date">${dateStr}</span>
           </div>
           <div class="card-header-right">
+            ${outcomeBadgeHtml}
             <span class="rr-badge" title="Actual Risk-Reward Ratio">1:${actualRR} RR</span>
           </div>
         </div>
@@ -281,6 +369,8 @@ export class BacktestPanel {
           <div class="price-chip price-sl">SL: <b>${pos.prices.stopLoss}</b></div>
           <div class="price-chip price-tp">TP: <b>${pos.prices.takeProfit}</b></div>
         </div>
+
+        ${analysisRowHtml}
 
         <div class="form-grid">
           <div class="form-field">
@@ -330,6 +420,18 @@ export class BacktestPanel {
 
     this.shadow.getElementById("btn-minimize")?.addEventListener("click", () => {
       this.toggleMinimize();
+    });
+
+    this.shadow.getElementById("btn-analyze")?.addEventListener("click", () => {
+      if (this.callbacks.onRequestAnalysis) {
+        this.callbacks.onRequestAnalysis();
+      }
+    });
+
+    this.shadow.getElementById("btn-export-csv")?.addEventListener("click", () => {
+      if (this.callbacks.onExportCSV) {
+        this.callbacks.onExportCSV();
+      }
     });
 
     this.shadow.getElementById("btn-cleanup")?.addEventListener("click", () => {
@@ -533,10 +635,21 @@ export class BacktestPanel {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 8px 14px;
+          padding: 8px 12px;
           background: #141720;
           border-bottom: 1px solid #2a2e39;
           font-size: 11px;
+          gap: 8px;
+        }
+        .toolbar-left {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .toolbar-right {
+          display: flex;
+          align-items: center;
+          gap: 6px;
         }
         .toolbar-item {
           display: flex;
@@ -561,7 +674,7 @@ export class BacktestPanel {
           font-weight: 600;
         }
         .toolbar-input {
-          width: 55px;
+          width: 50px;
           background: #1e222d;
           border: 1px solid #2a2e39;
           border-radius: 4px;
@@ -574,6 +687,32 @@ export class BacktestPanel {
         }
         .toolbar-input:focus {
           border-color: #2962ff;
+        }
+        .action-btn {
+          background: #2962ff;
+          color: #ffffff;
+          border: none;
+          border-radius: 4px;
+          padding: 4px 8px;
+          font-size: 11px;
+          font-weight: 600;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          transition: background 0.15s ease;
+          user-select: none;
+        }
+        .action-btn:hover {
+          background: #1e53e5;
+        }
+        .action-btn.secondary {
+          background: #2a2e39;
+          color: #d1d4dc;
+        }
+        .action-btn.secondary:hover {
+          background: #363c4e;
+          color: #ffffff;
         }
 
         .cards-container {
@@ -622,6 +761,26 @@ export class BacktestPanel {
           background: rgba(242, 54, 69, 0.2);
           color: #f23645;
           border: 1px solid rgba(242, 54, 69, 0.4);
+        }
+        .badge-tp {
+          background: rgba(8, 153, 129, 0.2);
+          color: #089981;
+          border: 1px solid rgba(8, 153, 129, 0.4);
+        }
+        .badge-sl {
+          background: rgba(242, 54, 69, 0.2);
+          color: #f23645;
+          border: 1px solid rgba(242, 54, 69, 0.4);
+        }
+        .badge-ambiguous {
+          background: rgba(255, 152, 0, 0.2);
+          color: #ff9800;
+          border: 1px solid rgba(255, 152, 0, 0.4);
+        }
+        .badge-open {
+          background: rgba(41, 98, 255, 0.2);
+          color: #2962ff;
+          border: 1px solid rgba(41, 98, 255, 0.4);
         }
         .drawing-id {
           color: #787b86;
@@ -674,6 +833,46 @@ export class BacktestPanel {
         }
         .price-tp b {
           color: #089981;
+        }
+
+        .analysis-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+          margin-bottom: 8px;
+        }
+        .metric-chip {
+          background: #1e222d;
+          border: 1px solid #2a2e39;
+          padding: 3px 6px;
+          border-radius: 4px;
+          font-size: 10px;
+          color: #b2b5be;
+        }
+        .metric-chip b {
+          font-weight: 600;
+        }
+        .metric-chip.mfe b {
+          color: #089981;
+        }
+        .metric-chip.mae b {
+          color: #f23645;
+        }
+        .metric-chip.dd b {
+          color: #ff9800;
+        }
+        .metric-chip.outcome-time {
+          color: #787b86;
+        }
+        .analysis-warning {
+          background: rgba(255, 152, 0, 0.15);
+          color: #ff9800;
+          border: 1px solid rgba(255, 152, 0, 0.3);
+          border-radius: 4px;
+          padding: 4px 8px;
+          font-size: 10px;
+          margin-bottom: 8px;
+          line-height: 1.3;
         }
 
         .form-grid {
@@ -749,8 +948,20 @@ export class BacktestPanel {
           background: #181b23;
           border-top: 1px solid #2a2e39;
           display: flex;
-          justify-content: flex-end;
+          justify-content: space-between;
+          align-items: center;
         }
+        .footer-stats {
+          font-size: 11px;
+          font-weight: 600;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .stat-tp { color: #089981; }
+        .stat-sl { color: #f23645; }
+        .stat-amb { color: #ff9800; }
+        .stat-open { color: #2962ff; }
         .footer-btn {
           background: transparent;
           border: 1px solid #2a2e39;

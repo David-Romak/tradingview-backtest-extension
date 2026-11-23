@@ -239,4 +239,128 @@ describe("Keyboard Shortcut Isolation", () => {
 
     panel.unmount();
   });
+
+  it("triggers onRequestAnalysis and onExportCSV callbacks on button clicks", () => {
+    let analysisRequested = false;
+    let exportRequested = false;
+
+    const panel = new BacktestPanel({
+      onMetadataChange: () => {},
+      onRequestAnalysis: () => {
+        analysisRequested = true;
+      },
+      onExportCSV: () => {
+        exportRequested = true;
+      },
+    });
+
+    panel.mount();
+    const shadow = panel.getShadowRoot();
+    assert.ok(shadow);
+
+    const btnAnalyze = shadow.querySelector("#btn-analyze") as HTMLButtonElement | null;
+    assert.ok(btnAnalyze);
+    btnAnalyze.click();
+    assert.strictEqual(analysisRequested, true);
+
+    const btnExport = shadow.querySelector("#btn-export-csv") as HTMLButtonElement | null;
+    assert.ok(btnExport);
+    btnExport.click();
+    assert.strictEqual(exportRequested, true);
+
+    panel.unmount();
+  });
+
+  it("renders outcome badges, excursion metrics, and footer stats when analysis results are supplied", () => {
+    const panel = new BacktestPanel({
+      onMetadataChange: () => {},
+    });
+    panel.mount();
+
+    const positions: PositionWithMetadata[] = [
+      {
+        id: "p_win",
+        type: "long_position",
+        prices: { entry: 1.085, stopLoss: 1.08, takeProfit: 1.0925 },
+        entryTime: 1700000000,
+        metadata: { type: "A0", breakEntryTime: "", notes: "" },
+      },
+      {
+        id: "p_loss",
+        type: "short_position",
+        prices: { entry: 150.0, stopLoss: 151.0, takeProfit: 148.5 },
+        entryTime: 1700003600,
+        metadata: { type: "B0", breakEntryTime: "", notes: "" },
+      },
+    ];
+
+    panel.setPositions(positions);
+
+    panel.setAnalysisResults([
+      {
+        drawingId: "p_win",
+        bias: "buy",
+        entryPrice: 1.085,
+        stopLossPrice: 1.08,
+        takeProfitPrice: 1.0925,
+        entryTime: 1700000000,
+        entryDateStr: "2023-11-14 22:13",
+        result: "TP",
+        outcomeTime: 1700007200,
+        outcomeDateStr: "2023-11-15 00:13",
+        tpPips: 75.0,
+        slPips: 50.0,
+        actualRR: 1.5,
+        mfePips: 75.0,
+        maePips: 10.0,
+        ddPips: 10.0,
+      },
+      {
+        drawingId: "p_loss",
+        bias: "sell",
+        entryPrice: 150.0,
+        stopLossPrice: 151.0,
+        takeProfitPrice: 148.5,
+        entryTime: 1700003600,
+        entryDateStr: "2023-11-14 23:13",
+        result: "SL",
+        outcomeTime: 1700010800,
+        outcomeDateStr: "2023-11-15 01:13",
+        tpPips: 150.0,
+        slPips: 100.0,
+        actualRR: 1.5,
+        mfePips: 30.0,
+        maePips: 100.0,
+        ddPips: 30.0, // SL => DD = MFE
+      },
+    ]);
+
+    const shadow = panel.getShadowRoot();
+    assert.ok(shadow);
+
+    // Verify TP badge on winning trade
+    const tpBadge = shadow.querySelector('.card[data-drawing-id="p_win"] .badge-tp');
+    assert.ok(tpBadge);
+    assert.strictEqual(tpBadge.textContent, "TP");
+
+    // Verify SL badge on losing trade
+    const slBadge = shadow.querySelector('.card[data-drawing-id="p_loss"] .badge-sl');
+    assert.ok(slBadge);
+    assert.strictEqual(slBadge.textContent, "SL");
+
+    // Verify metrics chips
+    const ddWin = shadow.querySelector('.card[data-drawing-id="p_win"] .metric-chip.dd b');
+    assert.strictEqual(ddWin?.textContent, "10p");
+
+    const ddLoss = shadow.querySelector('.card[data-drawing-id="p_loss"] .metric-chip.dd b');
+    assert.strictEqual(ddLoss?.textContent, "30p"); // DD = MFE = 30p
+
+    // Verify footer stats
+    const footerStats = shadow.querySelector(".footer-stats");
+    assert.ok(footerStats);
+    assert.ok(footerStats.textContent?.includes("1 TP"));
+    assert.ok(footerStats.textContent?.includes("1 SL"));
+
+    panel.unmount();
+  });
 });

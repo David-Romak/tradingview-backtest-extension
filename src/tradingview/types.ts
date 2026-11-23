@@ -90,4 +90,23 @@ export interface SetStopLossMessage {
   payload: SetStopLossPayload;
 }
 
-export type BridgeMessage = DrawingsUpdatedMessage | SetStopLossMessage;
+export interface RequestHistoricalAnalysisMessage {
+  channel: typeof BRIDGE_CHANNEL;
+  type: typeof BRIDGE_MESSAGE_TYPES.REQUEST_HISTORICAL_ANALYSIS;
+}
+
+export interface HistoricalAnalysisResultMessage {
+  channel: typeof BRIDGE_CHANNEL;
+  type: typeof BRIDGE_MESSAGE_TYPES.HISTORICAL_ANALYSIS_RESULT;
+  payload: {
+    results: import("../analysis/types").TradeAnalysisResult[];
+    totalCandles: number;
+    timestamp: number;
+  };
+}
+
+export type BridgeMessage =
+  | DrawingsUpdatedMessage
+  | SetStopLossMessage
+  | RequestHistoricalAnalysisMessage
+  | HistoricalAnalysisResultMessage;

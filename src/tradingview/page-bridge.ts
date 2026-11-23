@@ -1,3 +1,4 @@
+import { analyzeTrade } from "../analysis/analyzer";
 import { BRIDGE_CHANNEL, BRIDGE_MESSAGE_TYPES } from "../shared/constants";
 import { TradingViewAdapter } from "./adapter";
 import { DrawingObserver } from "./drawings";
@@ -64,7 +65,7 @@ observer.start((positions, totalDrawings) => {
 });
 
 // Listen for incoming messages from ISOLATED world (e.g., RR automation updates)
-window.addEventListener("message", (event: MessageEvent) => {
+window.addEventListener("message", async (event: MessageEvent) => {
   if (event.source !== window) return;
   if (event.origin !== window.location.origin) return;
 
@@ -89,6 +90,84 @@ window.addEventListener("message", (event: MessageEvent) => {
         `[Backtest Assistant: Page Bridge] Failed to set stop loss on ${drawingId}`,
       );
     }
+  }
+
+  if (data.type === BRIDGE_MESSAGE_TYPES.REQUEST_HISTORICAL_ANALYSIS) {
+    const chart = adapter.getActiveChart();
+    if (!chart) {
+      console.warn("[Backtest Assistant: Page Bridge] Cannot analyze: active chart not found");
+      return;
+    }
+
+    const positions = adapter.getPositionDrawings(chart);
+    const candles = await adapter.getCandleData(chart);
+    const chartObj = chart as Record<string, unknown>;
+    let symbol: string | undefined;
+    if (typeof chartObj.symbol === "function") {
+      try {
+        symbol = String((chartObj.symbol as () => unknown)());
+      } catch {}
+    }
+
+    console.log(
+      `[Backtest Assistant: Page Bridge] Running historical analysis for ${positions.length} trades with ${candles.length} historical candles...`,
+    );
+
+    const results = positions.map((pos) => {
+      let entryTime = pos.entryTime ?? 0;
+      if (entryTime === 0 && pos.points && pos.points.length > 0) {
+        if (pos.points[0].time && pos.points[0].time > 0) {
+          entryTime = pos.points[0].time;
+        } else if (typeof pos.points[0].index === "number" && candles.length > 0) {
+          const idx = pos.points[0].index;
+          if (idx >= 0 && idx < candles.length) {
+            entryTime = candles[idx].time;
+          }
+        }
+      }
+
+      return analyzeTrade({
+        drawingId: pos.id,
+        type: pos.type,
+        entry: pos.prices.entry,
+        stopLoss: pos.prices.stopLoss,
+        takeProfit: pos.prices.takeProfit,
+        entryTime,
+        symbol,
+        candles,
+      });
+    });
+
+    window.postMessage(
+      {
+        channel: BRIDGE_CHANNEL,
+        type: BRIDGE_MESSAGE_TYPES.HISTORICAL_ANALYSIS_RESULT,
+        payload: {
+          results,
+          totalCandles: candles.length,
+          timestamp: Date.now(),
+        },
+      },
+      window.location.origin,
+    );
+
+    console.log(
+      `[Backtest Assistant: Page Bridge] Historical analysis complete (${results.length} trades evaluated):`,
+    );
+    console.table(
+      results.map((r) => ({
+        id: r.drawingId,
+        bias: r.bias,
+        result: r.result,
+        at: r.outcomeDateStr ?? "N/A",
+        actualRR: `1:${r.actualRR}`,
+        tpPips: r.tpPips,
+        slPips: r.slPips,
+        mfePips: r.mfePips,
+        maePips: r.maePips,
+        ddPips: r.ddPips,
+      })),
+    );
   }
 });
 }

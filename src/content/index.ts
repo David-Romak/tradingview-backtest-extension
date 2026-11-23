@@ -1,3 +1,5 @@
+import type { TradeAnalysisResult } from "../analysis/types";
+import { exportPositionsToCSV, downloadCSV } from "../export/csv";
 import { MetadataStore } from "../metadata/store";
 import type { PositionWithMetadata, TradeMetadata } from "../metadata/types";
 import { RRManager } from "../rr/manager";
@@ -19,6 +21,7 @@ if (!globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__) {
   const store = new MetadataStore();
   let latestPositions: PositionDrawing[] = [];
   let latestSymbol: string | undefined;
+  let latestAnalysisResults: Map<string, TradeAnalysisResult> = new Map();
 
   let rrManager: RRManager;
 
@@ -46,6 +49,36 @@ if (!globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__) {
         if (typeof chrome !== "undefined" && chrome.storage?.local) {
           chrome.storage.local.set({ [RR_STORAGE_KEY]: config });
         }
+      },
+      onRequestAnalysis: () => {
+        panel.setAnalyzing(true);
+        console.log(
+          "[Backtest Assistant] Requesting historical candle analysis from page bridge...",
+        );
+        window.postMessage(
+          {
+            channel: BRIDGE_CHANNEL,
+            type: BRIDGE_MESSAGE_TYPES.REQUEST_HISTORICAL_ANALYSIS,
+          },
+          window.location.origin,
+        );
+      },
+      onExportCSV: () => {
+        const positions = panel.getPositions();
+        if (positions.length === 0) {
+          console.warn("[Backtest Assistant] No positions on chart to export.");
+          return;
+        }
+        const csv = exportPositionsToCSV(
+          positions,
+          latestAnalysisResults,
+          latestSymbol,
+        );
+        const filename = `tv-backtest-${latestSymbol || "forex"}-${new Date().toISOString().slice(0, 10)}.csv`;
+        downloadCSV(csv, filename);
+        console.log(
+          `[Backtest Assistant] Exported ${positions.length} trades to CSV (${filename}).`,
+        );
       },
     },
     { enabled: true, defaultRR: 1.5 },
@@ -117,6 +150,14 @@ if (!globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__) {
         (symbol ? ` [${symbol}]` : ""),
       );
 
+      // Clean up analysis results for drawings removed from chart
+      const activeIds = new Set(positions.map((p) => p.id));
+      for (const id of latestAnalysisResults.keys()) {
+        if (!activeIds.has(id)) {
+          latestAnalysisResults.delete(id);
+        }
+      }
+
       if (positionsWithMeta.length > 0) {
         console.table(
           positionsWithMeta.map((p: PositionWithMetadata) => ({
@@ -131,6 +172,17 @@ if (!globalObj.__BACKTEST_ASSISTANT_CONTENT_INITIALIZED__) {
           })),
         );
       }
+    }
+
+    if (message.type === BRIDGE_MESSAGE_TYPES.HISTORICAL_ANALYSIS_RESULT) {
+      const { results, totalCandles } = message.payload;
+      for (const res of results as TradeAnalysisResult[]) {
+        latestAnalysisResults.set(res.drawingId, res);
+      }
+      panel.setAnalysisResults(latestAnalysisResults);
+      console.log(
+        `[Backtest Assistant] Historical candle analysis completed for ${results.length} trades against ${totalCandles} candles.`,
+      );
     }
   });
 }
